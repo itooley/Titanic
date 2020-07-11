@@ -1,0 +1,199 @@
+---
+title: "TitanicCaret"
+author: "Isabelle Tooley"
+date: "7/6/2020"
+output: html_document
+---
+
+**********
+* SET-UP *
+**********
+
+
+LIBRARIES
+```{r setup}
+library(tidyverse)
+library(caret)
+library(doSNOW)
+```
+
+
+READ IN DATA
+```{r}
+train <- read.csv(file = "train.csv", stringsAsFactors = FALSE)
+test <- read.csv(file="test.csv", stringsAsFactors = FALSE)
+
+#remove useless variables (ID,  name) and messy, sparse variables (ticket, cabin)
+titanic <- bind_rows(train, test) %>%
+  select(-PassengerId, -Name, -Ticket, -Cabin)
+
+summary(titanic)
+view(titanic)
+```
+
+
+
+******************************************
+* DATA WRANGLING and FEATURE ENGINEERING *
+******************************************
+
+
+Simple imputation on EMBARKED variable
+```{r}
+#S is the most frequent value
+table(titanic$Embarked)
+titanic$Embarked[titanic$Embarked == ""] <- "S"
+```
+
+Create a tracking variable (advanced imputation later on)
+```{r}
+#missing age values are tagged with "Y"
+#sometimes the fact that data is missing can have predictive power
+summary(titanic$Age)
+titanic <- titanic %>%
+  mutate(missing_age = ifelse(is.na(Age), "Y", "N"))
+```
+
+Combine demographic variables
+```{r}
+#some models do better with one stronger variable, and some do better with many little variables
+titanic <- titanic %>%
+  mutate(family_size = SibSp + Parch + 1)
+```
+
+Coerce to factors
+```{r}
+#this tells the ML models that we're trying to predict a class (either group 0 or 1)
+titanic$Survived <- as.factor(titanic$Survived)
+
+#all other ordinal or categorical features
+titanic$Pclass <- as.factor(titanic$Pclass)
+titanic$Sex <- as.factor(titanic$Sex)
+titanic$Embarked <- as.factor(titanic$Embarked)
+titanic$missing_age <- as.factor(titanic$missing_age)
+```
+
+
+**************
+* IMPUTATION *
+**************
+
+
+Transform factors to dummy variables (caret imputation methods only work on numeric data)
+```{r}
+dummy_vars <- dummyVars(~ ., data = titanic %>% select(-Survived))
+dummy_titanic <- predict(dummy_vars, titanic %>% select(-Survived))
+view(dummy_titanic)
+```
+
+Impute!
+```{r}
+#could use: 1) median/mode/mean/some other statistic (but that's not great),
+# 2) k nearest neighbors, 3) bagged decision trees (strong predictive power, but computationally intensive)
+
+#train a preprocess model using the dummy variable data
+pre_process <- preProcess(dummy_titanic, method = "bagImpute")
+processed_titanic <- predict(pre_process, dummy_titanic)
+summary(processed_titanic)
+
+#note: this is just a matrix of all the factors, the response has been removed!
+#take imputed values (age and fare factor) and overwrite those columns in the original data
+titanic$Age <- processed_titanic[, 6]
+titanic$Fare <- processed_titanic[,9]
+view(titanic)
+```
+
+
+******************
+* DATA SPLITTING *
+******************
+
+
+```{r}
+#re-split into original train and test sets
+titanic_train <- titanic %>%
+  filter(!is.na(Survived))
+
+titanic_test <- titanic %>%
+  filter(is.na(Survived))
+```
+
+Create a sub-split from the train set (to train and measure accuracy)
+```{r}
+#create a 70/30 split from sub-train/sub-test
+#want to preserve the proportion of Survived responses so the sub samples are still representative of the population
+indexes <- createDataPartition(titanic_train$Survived, times = 1, p = 0.7, list = FALSE)
+sub_train <- titanic_train[indexes,]
+sub_test <- titanic_train[-indexes,]
+
+#compare response relative proportions
+prop.table(table(titanic_train$Survived))
+prop.table(table(sub_train$Survived))
+prop.table(table(sub_test$Survived))
+```
+
+
+
+******************
+* MODEL TRAINING *
+******************
+
+How to train the model:
+- repeated cross-validation
+- split the data 10 different ways to train 10 different models and evaluate how well they do with the data
+- do that ^ 3 times (for a total of 30 models)
+- do all of that ^^^ for each unique combination on a grid to find the optimal model parameters
+```{r}
+train_control <- trainControl(method = "repeatedcv", 
+                              number = 100, 
+                              repeats = 3)
+```
+
+
+** KNN **
+Parameters: k (number of neighbors)
+
+Train
+```{r}
+knn_model <- train(Survived ~., 
+                   data = sub_train, 
+                   method = "knn",
+                   trControl = train_control,
+                   preProcess = c("center", "scale"), #knn requires standardization (Euclidean distances)
+                   tuneLength = 25)
+
+knn_model
+plot(knn_model)
+```
+
+Predict
+```{r}
+knn_predict <- predict(knn_model, newdata = sub_test)
+confusionMatrix(knn_predict, sub_test$Survived)
+```
+
+Final predictions
+```{r}
+knn_model <- train(Survived ~., 
+                   data = titanic_train, 
+                   method = "knn",
+                   trControl = train_control,
+                   preProcess = c("center", "scale"), #knn requires standardization (Euclidean distances)
+                   tuneLength = 25)
+
+knn_model
+plot(knn_model)
+
+knn_final <- predict(knn_model, newdata = titanic_test %>% select(-Survived))
+knn_preds_df <- data.frame("PassengerId" = test$PassengerId, "Survived" = knn_final)
+
+write.csv(knn_preds_df, file = "KNN Predictions.csv", row.names = FALSE)
+```
+
+
+** Naive Bayes **
+
+```{r}
+
+```
+
