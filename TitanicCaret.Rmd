@@ -15,6 +15,7 @@ LIBRARIES
 library(tidyverse)
 library(caret)
 library(doSNOW)
+library(xgboost)
 ```
 
 
@@ -138,20 +139,19 @@ prop.table(table(sub_test$Survived))
 * MODEL TRAINING *
 ******************
 
+
+** KNN **
+Parameters: k (number of neighbors)
+
 How to train the model:
 - repeated cross-validation
-- split the data 10 different ways to train 10 different models and evaluate how well they do with the data
-- do that ^ 3 times (for a total of 30 models)
-- do all of that ^^^ for each unique combination on a grid to find the optimal model parameters
+- split the data 100 different ways to train 100 different models and evaluate how well they do with the data
+- do that ^ 3 times (for a total of 300 models)
 ```{r}
 train_control <- trainControl(method = "repeatedcv", 
                               number = 100, 
                               repeats = 3)
 ```
-
-
-** KNN **
-Parameters: k (number of neighbors)
 
 Train
 ```{r}
@@ -191,9 +191,57 @@ write.csv(knn_preds_df, file = "KNN Predictions.csv", row.names = FALSE)
 ```
 
 
-** Naive Bayes **
+
+** XGBOOST **
+
+How to train the model:
+- repeated cross-validation
+- split the data 10 different ways to train 10 different models and evaluate how well they do with the data
+- do that ^ 3 times (for a total of 30 models)
+- do all of that ^^^ for each unique combination on a grid to find the optimal model parameters
 
 ```{r}
+train_control <- trainControl(method = "repeatedcv", 
+                              number = 10, 
+                              repeats = 3,
+                              search = "grid")
+```
 
+Tune grid
+```{r}
+tune_grid <- expand.grid(eta = c(0.05, 0.075, 0.1),
+                         nrounds = c(50, 75, 100),
+                         max_depth = 6:8,
+                         min_child_weight = c(2.0, 2.25, 2.5),
+                         colsample_bytree = c(0.3, 0.4, 0.5),
+                         gamma = 0,
+                         subsample = 1)
+print(tune_grid)
+```
+
+Train
+```{r}
+xgb_model <- train(Survived ~ .,
+                   data = sub_train, 
+                   method = "xgbTree",
+                   tuneGrid = tune_grid,
+                   trControl = train_control)
+
+xgb_model
+beepr::beep(sound = 10)
+```
+
+Predict
+```{r}
+xgb_predict <- predict(xgb_model, newdata = sub_test)
+confusionMatrix(xgb_predict, sub_test$Survived)
+```
+
+Final predictions
+```{r}
+xgb_final <- predict(xgb_model, newdata = titanic_test %>% select(-Survived))
+xgb_preds_df <- data.frame("PassengerId" = test$PassengerId, "Survived" = xgb_final)
+
+write.csv(xgb_preds_df, file = "XGB Predictions.csv", row.names = FALSE)
 ```
 
